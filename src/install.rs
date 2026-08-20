@@ -206,7 +206,10 @@ impl Installer {
         if config.mode.repo() {
             let (syncdbs, _) = repo::repo_aur_dbs(config);
             for name in &u.repo_keep {
-                let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+                let old = local
+                    .pkg(name.as_str())
+                    .ok()
+                    .map(|p| p.version().to_string());
                 let new = syncdbs
                     .pkg(name.as_str())
                     .ok()
@@ -221,22 +224,26 @@ impl Installer {
         }
 
         for name in &u.aur_keep {
-            let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+            let old = local
+                .pkg(name.as_str())
+                .ok()
+                .map(|p| p.version().to_string());
             lines.push(format!("{}\t{}\t(aur)", name, old.unwrap_or_default()));
         }
 
         for (repo, name) in &u.pkgbuild_keep {
-            let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
-            lines.push(format!(
-                "{}\t{}\t({})",
-                name,
-                old.unwrap_or_default(),
-                repo
-            ));
+            let old = local
+                .pkg(name.as_str())
+                .ok()
+                .map(|p| p.version().to_string());
+            lines.push(format!("{}\t{}\t({})", name, old.unwrap_or_default(), repo));
         }
 
         for name in &u.devel {
-            let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+            let old = local
+                .pkg(name.as_str())
+                .ok()
+                .map(|p| p.version().to_string());
             lines.push(format!("{}\t{}\t(devel)", name, old.unwrap_or_default()));
         }
 
@@ -2051,7 +2058,8 @@ fn apply_patch(config: &Config, dir: &Path, patch: &str) -> Result<()> {
         .tempfile_in(dir)?;
     tmp.write_all(patch_bytes(patch).as_bytes())?;
     tmp.flush()?;
-    tmp.as_file().set_permissions(Permissions::from_mode(0o644))?;
+    tmp.as_file()
+        .set_permissions(Permissions::from_mode(0o644))?;
     tmp.persist(&path)
         .map_err(|e| e.error)
         .with_context(|| tr!("failed to write: {}", path.display().to_string()))?;

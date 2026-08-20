@@ -667,14 +667,13 @@ async fn ai_menu(
     let mut query = query.to_string();
 
     loop {
-        let selection =
-            match ai::select(config, &listing, &query, all_pkgs.len(), &history).await {
-                Ok(selection) => selection,
-                Err(err) => {
-                    print_error(c.error, err);
-                    return Ok(Vec::new());
-                }
-            };
+        let selection = match ai::select(config, &listing, &query, all_pkgs.len(), &history).await {
+            Ok(selection) => selection,
+            Err(err) => {
+                print_error(c.error, err);
+                return Ok(Vec::new());
+            }
+        };
 
         if !selection.reason.trim().is_empty() {
             ai::print_reason(config.cols, &selection.reason);
@@ -818,7 +817,10 @@ async fn ai_discover(config: &Config, query: &str) -> Result<Vec<String>> {
 }
 
 /// Offers a set of resolved candidates and returns the chosen targets.
-async fn offer_candidates(config: &Config, resolved: Vec<(ai::Candidate, String, String)>) -> Result<Vec<String>> {
+async fn offer_candidates(
+    config: &Config,
+    resolved: Vec<(ai::Candidate, String, String)>,
+) -> Result<Vec<String>> {
     let c = config.color;
     let pad = resolved.len().to_string().len();
     let namespace = config.aur_namespace();
@@ -826,7 +828,11 @@ async fn offer_candidates(config: &Config, resolved: Vec<(ai::Candidate, String,
     for (i, (cand, repo, desc)) in resolved.iter().enumerate() {
         // The internal namespace may be `__aur__` when the user has a repo
         // literally named `aur`; never show that implementation detail.
-        let shown = if repo == namespace { "aur" } else { repo.as_str() };
+        let shown = if repo == namespace {
+            "aur"
+        } else {
+            repo.as_str()
+        };
         println!(
             "{} {}/{} - {}",
             c.number_menu.paint(format!("{:>pad$}", i + 1, pad = pad)),

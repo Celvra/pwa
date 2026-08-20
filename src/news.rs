@@ -95,10 +95,8 @@ pub async fn news_text(config: &Config) -> Result<String> {
                 if config.news < 2 && date.timestamp() < newest_pkg(config) {
                     continue;
                 }
-                let _ = std::fmt::Write::write_fmt(
-                    &mut out,
-                    format_args!("{} ", date.format("%F")),
-                );
+                let _ =
+                    std::fmt::Write::write_fmt(&mut out, format_args!("{} ", date.format("%F")));
             }
             Err(_) => out.push_str("(no date) "),
         }

@@ -222,7 +222,8 @@ pub fn input(config: &Config, question: &str) -> String {
     };
 
     let mut raw = original_termios.clone();
-    raw.local_flags.remove(LocalFlags::ICANON | LocalFlags::ECHO);
+    raw.local_flags
+        .remove(LocalFlags::ICANON | LocalFlags::ECHO);
     let _ = tcsetattr(&stdin_handle, SetArg::TCSANOW, &raw);
 
     let prompt = format!("{} ", action.paint("::"));

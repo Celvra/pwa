@@ -245,7 +245,12 @@ impl<'a> ToolExecutor<'a> {
                     ));
                 }
             } else {
-                view.push_tool_line(tool_line(self.config, &words.present, &words.keyword, false));
+                view.push_tool_line(tool_line(
+                    self.config,
+                    &words.present,
+                    &words.keyword,
+                    false,
+                ));
             }
 
             let result = self.run_tool(name, args).await;
@@ -276,11 +281,17 @@ impl<'a> ToolExecutor<'a> {
     async fn run_tool(&self, name: &str, args: &Value) -> Result<String> {
         match name {
             "search_packages" => {
-                let query = args.get("query").and_then(Value::as_str).unwrap_or_default();
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 self.search_packages(query).await
             }
             "web_search" => {
-                let query = args.get("query").and_then(Value::as_str).unwrap_or_default();
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 self.web_search(query).await
             }
             "web_fetch" => {
@@ -325,7 +336,10 @@ impl<'a> ToolExecutor<'a> {
         if !words.keyword.is_empty() {
             line.push_str(&format!(
                 " {}",
-                self.config.color.code.paint(format!("\"{}\"", words.keyword))
+                self.config
+                    .color
+                    .code
+                    .paint(format!("\"{}\"", words.keyword))
             ));
         }
         print!("{} {} ", line, self.config.color.bold.paint(tr!("? [Y/n]")));
@@ -548,10 +562,8 @@ impl ToolExecutor<'_> {
                 for pkg in pkgs {
                     n += 1;
                     let desc = pkg.description.clone().unwrap_or_default();
-                    let extra = format!(
-                        " votes={} popularity={:.2}",
-                        pkg.num_votes, pkg.popularity
-                    );
+                    let extra =
+                        format!(" votes={} popularity={:.2}", pkg.num_votes, pkg.popularity);
                     out.push(format!(
                         "{}. aur/{} {}  {}{}",
                         n, pkg.name, pkg.version, desc, extra
@@ -682,7 +694,10 @@ impl ToolExecutor<'_> {
     /// Fetches a page and returns its readable text.
     async fn web_fetch(&self, url: &str) -> Result<String> {
         let url = url.trim();
-        ensure!(url.starts_with("https://") || url.starts_with("http://"), tr!("only http(s) urls can be fetched"));
+        ensure!(
+            url.starts_with("https://") || url.starts_with("http://"),
+            tr!("only http(s) urls can be fetched")
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("pwa (paru with ai)"));

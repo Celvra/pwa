@@ -170,14 +170,14 @@ impl ToolCallAccumulator {
                     _ => String::new(),
                 };
                 let joined = format!("{}{}", current, args);
-                entry.arguments =
-                    serde_json::from_str(&joined).unwrap_or(Value::String(joined));
+                entry.arguments = serde_json::from_str(&joined).unwrap_or(Value::String(joined));
             }
         }
     }
 
     fn finish(mut self) -> Vec<ToolCall> {
-        self.calls.retain(|c| !c.id.is_empty() && !c.name.is_empty());
+        self.calls
+            .retain(|c| !c.id.is_empty() && !c.name.is_empty());
         self.calls
     }
 }
@@ -265,7 +265,7 @@ impl<'a> LiveView<'a> {
         let template = "{msg}";
 
         let pb = ProgressBar::new_spinner();
-if let Ok(style) = ProgressStyle::with_template(template) {
+        if let Ok(style) = ProgressStyle::with_template(template) {
             pb.set_style(style);
         }
         let width = config.cols.unwrap_or(80).saturating_sub(4).max(20);
@@ -342,9 +342,10 @@ if let Ok(style) = ProgressStyle::with_template(template) {
         let mut lines = wrapped.iter().rev().take(3).collect::<Vec<_>>();
         lines.reverse();
 
-        for line in lines.into_iter().map(|l| {
-            gray.paint(format!("    {}", l)).to_string()
-        }) {
+        for line in lines
+            .into_iter()
+            .map(|l| gray.paint(format!("    {}", l)).to_string())
+        {
             msg.push_str(&line);
             msg.push('\n');
         }
@@ -395,7 +396,8 @@ impl crate::ai_tools::ToolView for LiveView<'_> {
 
     fn ask(&mut self, question: &str, default: bool) -> bool {
         let config = self.config;
-        self.pb.suspend(|| crate::util::ask(config, question, default))
+        self.pb
+            .suspend(|| crate::util::ask(config, question, default))
     }
 }
 
@@ -616,7 +618,10 @@ pub async fn complete_with_tools(
     // rounds, never torn down, and only finished once the conversation ends.
     let mut view = LiveView::new(config);
     if executor
-        .choose(view.as_mut().map(|view| view as &mut dyn crate::ai_tools::ToolView))
+        .choose(
+            view.as_mut()
+                .map(|view| view as &mut dyn crate::ai_tools::ToolView),
+        )
         .is_none()
     {
         if let Some(view) = view.as_mut() {
@@ -1071,8 +1076,14 @@ pub async fn select(
     messages.push(Message::user(prompt));
 
     let mut view = LiveView::new(config);
-    let completion =
-        complete(config, &messages, None, view.as_mut(), &tr!("Querying AI...")).await?;
+    let completion = complete(
+        config,
+        &messages,
+        None,
+        view.as_mut(),
+        &tr!("Querying AI..."),
+    )
+    .await?;
     if let Some(view) = view.as_mut() {
         view.finish();
     }
@@ -1189,7 +1200,10 @@ pub async fn discover(
     if let Some(pkgs) = value.get("packages").and_then(Value::as_array) {
         for pkg in pkgs {
             let name = pkg.get("name").and_then(Value::as_str).unwrap_or_default();
-            let reason = pkg.get("reason").and_then(Value::as_str).unwrap_or_default();
+            let reason = pkg
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if name.trim().is_empty() {
                 continue;
             }
@@ -1433,10 +1447,7 @@ pub async fn update_risk(
         "Upgrade list:\n{}\n\nArch Linux news:\n{}\n\nAssess the risk of this upgrade.",
         upgrades, news
     );
-    let mut messages = vec![
-        Message::system(UPDATE_RISK_SYSTEM),
-        Message::user(prompt),
-    ];
+    let mut messages = vec![Message::system(UPDATE_RISK_SYSTEM), Message::user(prompt)];
 
     let content = complete_with_tools(
         config,
@@ -1487,14 +1498,18 @@ mod tests {
     #[test]
     fn wrapping_still_prefers_spaces() {
         let lines = wrap_text("the quick brown fox", 10);
-        assert_eq!(lines, vec!["the quick".to_string(), "brown fox".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["the quick".to_string(), "brown fox".to_string()]
+        );
     }
 
     #[test]
     fn long_cjk_reason_wraps_within_the_terminal() {
         // The width print_reason passes: terminal columns minus its four space
         // indent. Every produced line has to fit, including continuations.
-        let text = "请求“哪个好用”过于模糊，未指定要安装浏览器、扩展还是其他工具，无法从列表中挑选。";
+        let text =
+            "请求“哪个好用”过于模糊，未指定要安装浏览器、扩展还是其他工具，无法从列表中挑选。";
         let width = 80 - 4;
 
         let lines = wrap_text(text, width);
@@ -1620,7 +1635,10 @@ mod tests {
         assert_eq!(value["id"], "call_1");
         assert_eq!(value["type"], "function");
         assert_eq!(value["function"]["name"], "web_search");
-        assert_eq!(value["function"]["arguments"], "{\"query\":\"tor browser\"}");
+        assert_eq!(
+            value["function"]["arguments"],
+            "{\"query\":\"tor browser\"}"
+        );
     }
 
     #[test]
