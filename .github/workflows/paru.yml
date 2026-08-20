@@ -24,7 +24,28 @@ jobs:
       image: archlinux
     steps:
       - name: Install Packages
-        run: pacman -Syu rust clang gcc git libarchive pkgconf sudo fakeroot --noconfirm --needed
+        run: |
+          set -euo pipefail
+          cat >/etc/pacman.d/mirrorlist <<'EOF'
+          Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+          Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+          Server = https://ftp.osuosl.org/pub/archlinux/$repo/os/$arch
+          EOF
+          if ! grep -q '^XferCommand' /etc/pacman.conf; then
+            echo 'XferCommand = /usr/bin/curl -L --retry 5 --retry-delay 3 -C - -o %o %u' >> /etc/pacman.conf
+          fi
+          PACKAGES=(rust clang gcc git libarchive pkgconf sudo fakeroot)
+          for i in 1 2 3 4 5; do
+            if pacman -Syu --noconfirm --needed "${PACKAGES[@]}"; then
+              break
+            fi
+            echo "pacman failed, retry $i/5" >&2
+            sleep $((i * 5))
+            if [ "$i" -eq 5 ]; then
+              echo "pacman failed after retries" >&2
+              exit 1
+            fi
+          done
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,7 +69,28 @@ jobs:
       image: archlinux
     steps:
       - name: Install Packages
-        run: pacman -Syu rust curl clang git base-devel libarchive meson asciidoc doxygen fakechroot pkgconf --noconfirm --needed
+        run: |
+          set -euo pipefail
+          cat >/etc/pacman.d/mirrorlist <<'EOF'
+          Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+          Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+          Server = https://ftp.osuosl.org/pub/archlinux/$repo/os/$arch
+          EOF
+          if ! grep -q '^XferCommand' /etc/pacman.conf; then
+            echo 'XferCommand = /usr/bin/curl -L --retry 5 --retry-delay 3 -C - -o %o %u' >> /etc/pacman.conf
+          fi
+          PACKAGES=(rust curl clang git base-devel libarchive meson asciidoc doxygen fakechroot pkgconf)
+          for i in 1 2 3 4 5; do
+            if pacman -Syu --noconfirm --needed "${PACKAGES[@]}"; then
+              break
+            fi
+            echo "pacman failed, retry $i/5" >&2
+            sleep $((i * 5))
+            if [ "$i" -eq 5 ]; then
+              echo "pacman failed after retries" >&2
+              exit 1
+            fi
+          done
 
       - name: Install Pacman-git
         run: |
