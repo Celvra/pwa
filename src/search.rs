@@ -1,12 +1,13 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::config::SortBy;
 use crate::config::{Config, SortMode};
 use crate::fmt::{color_repo, link_str, print_indent};
-use crate::util::{input, is_arch_repo, NumberMenu};
-use crate::{info, printtr};
+use crate::util::{ask_yne, input, is_arch_repo, is_number_menu, NumberMenu, YesNoEdit};
+use crate::{ai, info, print_error, printtr};
 
-use ansiterm::Style;
+use ansiterm::{Color, Style};
 use anyhow::{ensure, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::HumanBytes;
@@ -126,7 +127,7 @@ fn search_local<'a>(config: &'a Config, targets: &[String]) -> Result<Vec<&'a al
     Ok(ret)
 }
 
-fn search_repos<'a>(config: &'a Config, targets: &[String]) -> Result<Vec<&'a alpm::Package>> {
+pub fn search_repos<'a>(config: &'a Config, targets: &[String]) -> Result<Vec<&'a alpm::Package>> {
     if targets.is_empty() || !config.mode.repo() {
         return Ok(Vec::new());
     }
@@ -189,7 +190,7 @@ async fn search_aur_regex(config: &Config, targets: &[String]) -> Result<Vec<rau
     Ok(pkgs)
 }
 
-async fn search_aur(config: &Config, targets: &[String]) -> Result<Vec<raur::Package>> {
+pub async fn search_aur(config: &Config, targets: &[String]) -> Result<Vec<raur::Package>> {
     if targets.is_empty() || !config.mode.aur() {
         return Ok(Vec::new());
     }
@@ -233,7 +234,7 @@ async fn search_aur(config: &Config, targets: &[String]) -> Result<Vec<raur::Pac
     };
 
     match config.sort_by {
-        SortBy::Votes => matches.sort_by(|a, b| b.num_votes.cmp(&a.num_votes)),
+        SortBy::Votes => matches.sort_by_key(|p| std::cmp::Reverse(p.num_votes)),
         SortBy::Popularity => {
             matches.sort_by(|a, b| b.popularity.partial_cmp(&a.popularity).unwrap())
         }
@@ -436,7 +437,7 @@ fn print_alpm_pkg(config: &Config, pkg: &alpm::Package, quiet: bool) {
     }
 }
 
-pub fn interactive_search_local(config: &mut Config) -> Result<()> {
+pub async fn interactive_search_local(config: &mut Config) -> Result<()> {
     let mut all_pkgs = Vec::new();
     let repo_pkgs = search_local(config, &config.targets)?;
 
@@ -445,7 +446,7 @@ pub fn interactive_search_local(config: &mut Config) -> Result<()> {
     }
 
     let was_results = all_pkgs.is_empty();
-    let targs = interactive_menu(config, all_pkgs, false)?;
+    let targs = interactive_menu(config, all_pkgs, false).await?;
     if targs.is_empty() && !was_results {
         printtr!(" there is nothing to do");
     }
@@ -471,7 +472,7 @@ pub async fn interactive_search(config: &mut Config, install: bool) -> Result<()
     }
 
     let was_results = all_pkgs.is_empty();
-    let targs = interactive_menu(config, all_pkgs, install)?;
+    let targs = interactive_menu(config, all_pkgs, install).await?;
     if targs.is_empty() && !was_results {
         printtr!(" there is nothing to do");
     }
@@ -480,7 +481,7 @@ pub async fn interactive_search(config: &mut Config, install: bool) -> Result<()
     Ok(())
 }
 
-pub fn interactive_menu(
+pub async fn interactive_menu(
     config: &Config,
     mut all_pkgs: Vec<AnyPkg<'_>>,
     install: bool,
@@ -488,6 +489,12 @@ pub fn interactive_menu(
     let pad = all_pkgs.len().to_string().len();
 
     if all_pkgs.is_empty() {
+        // Nothing matched: hand the natural language to the ai which can search
+        // the repositories itself instead of just returning empty handed.
+        if config.ai {
+            let query = config.targets.join(" ");
+            return ai_discover(config, &query).await;
+        }
         printtr!("no packages match search");
         return Ok(Vec::new());
     }
@@ -535,40 +542,333 @@ pub fn interactive_menu(
         return Ok(Vec::new());
     }
 
+    // Anything the number menu understands is still handled by the number menu.
+    // Only genuinely non numeric input is handed to the ai.
+    if config.ai && !is_number_menu(&input, &menu_words(config, &all_pkgs)) {
+        return ai_menu(config, &all_pkgs, input.trim(), install).await;
+    }
+
     let menu = NumberMenu::new(&input);
     let mut pkgs = Vec::new();
 
     if config.sort_mode == SortMode::TopDown {
         for (n, pkg) in all_pkgs.iter().enumerate() {
             if menu.contains(n + 1, "") {
-                match pkg {
-                    AnyPkg::RepoPkg(pkg) => {
-                        pkgs.push(format!("{}/{}", pkg.db().unwrap().name(), pkg.name()))
-                    }
-                    AnyPkg::AurPkg(pkg) => {
-                        pkgs.push(format!("{}/{}", config.aur_namespace(), pkg.name))
-                    }
-                    AnyPkg::Custom(repo, _, pkg) => pkgs.push(format!("{}/{}", repo, pkg.pkgname)),
-                }
+                pkgs.push(pkg_target(config, pkg));
             }
         }
     } else {
         for (n, pkg) in all_pkgs.iter().enumerate().rev() {
             if menu.contains(n + 1, "") {
-                match pkg {
-                    AnyPkg::RepoPkg(pkg) => {
-                        pkgs.push(format!("{}/{}", pkg.db().unwrap().name(), pkg.name()))
-                    }
-                    AnyPkg::AurPkg(pkg) => {
-                        pkgs.push(format!("{}/{}", config.aur_namespace(), pkg.name))
-                    }
-                    AnyPkg::Custom(repo, _, pkg) => pkgs.push(format!("{}/{}", repo, pkg.pkgname)),
-                }
+                pkgs.push(pkg_target(config, pkg));
             }
         }
     }
 
     Ok(pkgs)
+}
+
+fn pkg_name<'a>(pkg: &'a AnyPkg<'_>) -> &'a str {
+    match pkg {
+        AnyPkg::RepoPkg(pkg) => pkg.name(),
+        AnyPkg::AurPkg(pkg) => pkg.name.as_str(),
+        AnyPkg::Custom(_, _, pkg) => pkg.pkgname.as_str(),
+    }
+}
+
+fn pkg_repo<'a>(config: &'a Config, pkg: &'a AnyPkg<'_>) -> &'a str {
+    match pkg {
+        AnyPkg::RepoPkg(pkg) => pkg.db().unwrap().name(),
+        AnyPkg::AurPkg(_) => config.aur_namespace(),
+        AnyPkg::Custom(repo, _, _) => repo,
+    }
+}
+
+fn pkg_target(config: &Config, pkg: &AnyPkg<'_>) -> String {
+    format!("{}/{}", pkg_repo(config, pkg), pkg_name(pkg))
+}
+
+/// Every word the number menu could match, so prose can be told apart from a
+/// selection by name.
+fn menu_words<'a>(config: &'a Config, all_pkgs: &'a [AnyPkg<'_>]) -> Vec<&'a str> {
+    let mut words = Vec::with_capacity(all_pkgs.len() * 2);
+
+    for pkg in all_pkgs {
+        words.push(pkg_name(pkg));
+        words.push(pkg_repo(config, pkg));
+    }
+
+    words.sort_unstable();
+    words.dedup();
+    words
+}
+
+/// Hands a natural language selection to the ai.
+///
+/// The ai answers with numbers from the list that was just printed, which are
+/// then resolved locally. It never names a package itself, so it cannot pull in
+/// a target the user was not shown.
+async fn ai_menu(
+    config: &Config,
+    all_pkgs: &[AnyPkg<'_>],
+    query: &str,
+    install: bool,
+) -> Result<Vec<String>> {
+    let c = config.color;
+    let mut listing = String::new();
+
+    for (n, pkg) in all_pkgs.iter().enumerate() {
+        let (name, repo, version, desc, extra) = match pkg {
+            AnyPkg::RepoPkg(pkg) => (
+                pkg.name(),
+                pkg.db().unwrap().name(),
+                pkg.version().to_string(),
+                pkg.desc().unwrap_or_default().to_string(),
+                String::new(),
+            ),
+            AnyPkg::AurPkg(pkg) => (
+                pkg.name.as_str(),
+                "aur",
+                pkg.version.clone(),
+                pkg.description.clone().unwrap_or_default(),
+                format!(" votes={} popularity={:.2}", pkg.num_votes, pkg.popularity),
+            ),
+            AnyPkg::Custom(repo, srcinfo, pkg) => (
+                pkg.pkgname.as_str(),
+                *repo,
+                srcinfo.version(),
+                pkg.pkgdesc.clone().unwrap_or_default(),
+                String::new(),
+            ),
+        };
+
+        let installed = if config.alpm.localdb().pkg(name).is_ok() {
+            " installed"
+        } else {
+            ""
+        };
+
+        let _ = writeln!(
+            listing,
+            "{}. {}/{} {}{}{}\n   {}",
+            n + 1,
+            repo,
+            name,
+            version,
+            extra,
+            installed,
+            desc
+        );
+    }
+
+    // The conversation so far. Without this the model answers every follow up
+    // as if it were the first question.
+    let mut history: Vec<ai::Message> = Vec::new();
+    let mut query = query.to_string();
+
+    loop {
+        let selection =
+            match ai::select(config, &listing, &query, all_pkgs.len(), &history).await {
+                Ok(selection) => selection,
+                Err(err) => {
+                    print_error(c.error, err);
+                    return Ok(Vec::new());
+                }
+            };
+
+        if !selection.reason.trim().is_empty() {
+            ai::print_reason(config.cols, &selection.reason);
+        }
+
+        // Record this turn before asking, so a follow up carries it.
+        history.push(ai::Message::user(query.clone()));
+        history.push(ai::Message::assistant_text(ai::selection_json(&selection)));
+
+        let names = selection
+            .indices
+            .iter()
+            .map(|&n| pkg_name(&all_pkgs[n - 1]))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // With nothing to install there is no y to offer, only quit or keep talking.
+        let answer = if selection.indices.is_empty() {
+            ask_yne(config, &tr!("Nothing matched. Ask the ai again?"), false)
+        } else if install {
+            ask_yne(config, &tr!("Install {}?", names), true)
+        } else {
+            ask_yne(config, &tr!("Select {}?", names), true)
+        };
+
+        match answer {
+            YesNoEdit::Yes if !selection.indices.is_empty() => {
+                let mut pkgs = Vec::with_capacity(selection.indices.len());
+                for &n in &selection.indices {
+                    // Indices are validated against the list length before we get here.
+                    pkgs.push(pkg_target(config, &all_pkgs[n - 1]));
+                }
+                return Ok(pkgs);
+            }
+            YesNoEdit::Edit => {
+                let followup = input(config, &tr!("Tell the ai what to change:"));
+                let followup = followup.trim();
+
+                if followup.is_empty() {
+                    if selection.indices.is_empty() {
+                        printtr!("no packages match search");
+                    }
+                    return Ok(Vec::new());
+                }
+
+                query = followup.to_string();
+            }
+            _ => {
+                if selection.indices.is_empty() {
+                    printtr!("no packages match search");
+                }
+                return Ok(Vec::new());
+            }
+        }
+    }
+}
+
+/// Resolves a candidate package name to (repo, desc).
+async fn resolve_candidate(config: &Config, name: &str) -> Result<Option<(String, String)>> {
+    // Exact lookups in the sync dbs first.
+    if config.mode.repo() {
+        for db in config.alpm.syncdbs() {
+            if let Ok(pkg) = db.pkg(name) {
+                let repo = db.name().to_string();
+                let desc = pkg.desc().unwrap_or_default().to_string();
+                return Ok(Some((repo, desc)));
+            }
+        }
+    }
+
+    // The AUR.
+    if config.mode.aur() {
+        let targets = vec![name.to_string()];
+        if let Ok(pkgs) = search_aur(config, &targets).await {
+            for pkg in pkgs {
+                if pkg.name == name {
+                    let desc = pkg.description.clone().unwrap_or_default();
+                    return Ok(Some((config.aur_namespace().to_string(), desc)));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Asks the ai to find packages for a request that matched nothing, then lets
+/// the user pick with a multi select.
+///
+/// The ai is free to search the repositories and the web; every name it returns
+/// is resolved against the real databases before being offered, so a fabricated
+/// package is dropped instead of installed.
+///
+/// If the request was not about packages at all (the user is just talking to
+/// paru), the ai's reply is shown and the user may keep chatting or quit.
+async fn ai_discover(config: &Config, query: &str) -> Result<Vec<String>> {
+    let c = config.color;
+
+    let mut executor = crate::ai_tools::ToolExecutor::new(config);
+    let mut history: Vec<ai::Message> = Vec::new();
+    let mut query = query.to_string();
+
+    loop {
+        let discovery = match ai::discover(config, &query, &mut history, &mut executor).await {
+            Ok(discovery) => discovery,
+            Err(err) => {
+                print_error(c.error, err);
+                return Ok(Vec::new());
+            }
+        };
+
+        if !discovery.message.trim().is_empty() {
+            ai::print_body(config.cols, &discovery.message);
+            println!();
+        }
+
+        // Resolve to real packages, keeping the ai's reason alongside.
+        let mut resolved = Vec::new();
+        let mut candidates = discovery.candidates;
+        candidates.dedup_by(|a, b| a.name == b.name);
+        for candidate in candidates.drain(..) {
+            if let Ok(Some((repo, desc))) = resolve_candidate(config, &candidate.name).await {
+                resolved.push((candidate, repo, desc));
+            }
+        }
+
+        if !resolved.is_empty() {
+            return offer_candidates(config, resolved).await;
+        }
+
+        // Nothing to install: the model either chatted or found nothing. Offer
+        // to keep talking so a greeting like "你好" becomes a conversation
+        // instead of a dead end.
+        let followup = input(config, &tr!("Ask the ai anything (enter to quit):"));
+        let followup = followup.trim().to_string();
+        if followup.is_empty() {
+            return Ok(Vec::new());
+        }
+        query = followup;
+    }
+}
+
+/// Offers a set of resolved candidates and returns the chosen targets.
+async fn offer_candidates(config: &Config, resolved: Vec<(ai::Candidate, String, String)>) -> Result<Vec<String>> {
+    let c = config.color;
+    let pad = resolved.len().to_string().len();
+    let namespace = config.aur_namespace();
+
+    for (i, (cand, repo, desc)) in resolved.iter().enumerate() {
+        // The internal namespace may be `__aur__` when the user has a repo
+        // literally named `aur`; never show that implementation detail.
+        let shown = if repo == namespace { "aur" } else { repo.as_str() };
+        println!(
+            "{} {}/{} - {}",
+            c.number_menu.paint(format!("{:>pad$}", i + 1, pad = pad)),
+            color_repo(c.enabled, shown),
+            c.ss_name.paint(&cand.name),
+            desc
+        );
+        print_indent(
+            Style::from(Color::Fixed(240)),
+            4,
+            4,
+            config.cols,
+            " ",
+            cand.reason.split_whitespace(),
+        );
+    }
+
+    let selected = if config.no_confirm {
+        (0..resolved.len()).collect::<Vec<_>>()
+    } else {
+        let answer = input(config, &tr!("Packages to install (eg: 1 2 3, 1-3):"));
+        if answer.trim().is_empty() || answer.trim().eq_ignore_ascii_case("q") {
+            Vec::new()
+        } else {
+            let menu = NumberMenu::new(&answer);
+            (0..resolved.len())
+                .filter(|&i| menu.contains(i + 1, ""))
+                .collect::<Vec<_>>()
+        }
+    };
+
+    if selected.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(selected
+        .into_iter()
+        .map(|i| {
+            let (cand, repo, _) = &resolved[i];
+            format!("{}/{}", repo, cand.name)
+        })
+        .collect())
 }
 
 fn print_any_pkg(config: &Config, n: usize, pad: usize, pkg: &AnyPkg) {

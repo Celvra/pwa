@@ -122,6 +122,19 @@ _pacman_opts_common=(
 
 	'--skipreview[Skip the review process]'
 	"--review[Don't skip the review process]"
+
+	'--ai[Enable the AI layer]'
+	'--noai[Disable the AI layer]'
+	'--aiurl[Base URL of an OpenAI compatible API]:url:'
+	'--aimodel[Model to use for AI requests]:model:'
+	'--aikey[API key to use for AI requests]:key:'
+	'--aikeyfile[Read the AI API key from a file]:file:_files'
+	'--aitavilykey[API key for the Tavily web search]:key:_message "key"'
+	'--aireview[Let the AI review PKGBUILDs]'
+	"--noaireview[Don't let the AI review PKGBUILDs]"
+	'--aiedit[Let the AI propose PKGBUILD fixes]'
+	"--noaiedit[Don't let the AI modify PKGBUILDs]"
+	'--aitimeout[Timeout for AI requests]:seconds:'
 )
 
 # options for passing to _arguments: options for --upgrade commands

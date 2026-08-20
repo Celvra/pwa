@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::env::var;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::fs::{read_dir, read_link, OpenOptions};
+use std::fs::{read_dir, read_link, OpenOptions, Permissions};
 use std::io::{BufRead, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -21,9 +22,9 @@ use crate::fmt::{print_indent, print_install, print_install_verbose};
 use crate::keys::check_pgp_keys;
 use crate::pkgbuild::PkgbuildRepo;
 use crate::resolver::{flags, resolver};
-use crate::upgrade::{get_upgrades, Upgrades};
+use crate::upgrade::{get_upgrades, repo_upgrades, Upgrades};
 use crate::util::{ask, repo_aur_pkgs, split_repo_aur_targets};
-use crate::{args, exec, news, print_error, printtr, repo};
+use crate::{ai, args, exec, news, print_error, printtr, repo};
 
 use alpm::{Alpm, Depend, Version};
 use alpm_utils::depends::{satisfies, satisfies_nover, satisfies_provide, satisfies_provide_nover};
@@ -175,6 +176,154 @@ impl Installer {
         }
 
         Ok(())
+    }
+
+    /// Whether the upgrade risk check should run.
+    ///
+    /// Only meaningful during a -Syu with an upgrade list and the ai enabled.
+    fn should_check_upgrade(&self, config: &Config) -> bool {
+        if !config.ai {
+            return false;
+        }
+        let u = &self.upgrades;
+        !u.repo_keep.is_empty()
+            || !u.aur_keep.is_empty()
+            || !u.pkgbuild_keep.is_empty()
+            || !u.devel.is_empty()
+    }
+
+    /// Asks the ai to assess the risk of the pending upgrade. Warning only:
+    /// whatever it says never blocks or alters the upgrade.
+    async fn check_upgrade_risk(&self, config: &Config) -> Result<()> {
+        let c = config.color;
+        let u = &self.upgrades;
+
+        let mut lines = Vec::new();
+
+        let local = config.alpm.localdb();
+
+        // Repository packages: old version from the local db, new from sync.
+        if config.mode.repo() {
+            let (syncdbs, _) = repo::repo_aur_dbs(config);
+            for name in &u.repo_keep {
+                let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+                let new = syncdbs
+                    .pkg(name.as_str())
+                    .ok()
+                    .map(|p| p.version().to_string());
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    name,
+                    old.unwrap_or_default(),
+                    new.unwrap_or_default()
+                ));
+            }
+        }
+
+        for name in &u.aur_keep {
+            let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+            lines.push(format!("{}\t{}\t(aur)", name, old.unwrap_or_default()));
+        }
+
+        for (repo, name) in &u.pkgbuild_keep {
+            let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+            lines.push(format!(
+                "{}\t{}\t({})",
+                name,
+                old.unwrap_or_default(),
+                repo
+            ));
+        }
+
+        for name in &u.devel {
+            let old = local.pkg(name.as_str()).ok().map(|p| p.version().to_string());
+            lines.push(format!("{}\t{}\t(devel)", name, old.unwrap_or_default()));
+        }
+
+        if lines.is_empty() {
+            return Ok(());
+        }
+
+        let upgrades = lines.join("\n");
+        let news = match news::news_text(config).await {
+            Ok(news) => news,
+            Err(err) => {
+                print_error(c.error, err);
+                String::new()
+            }
+        };
+
+        let mut executor = crate::ai_tools::ToolExecutor::new(config);
+
+        let risk = match ai::update_risk(config, &upgrades, &news, &mut executor).await {
+            Ok(risk) => risk,
+            Err(err) => {
+                print_error(c.error, err);
+                return Ok(());
+            }
+        };
+
+        println!();
+        risk.print(config);
+        println!();
+
+        Ok(())
+    }
+
+    /// Asks the ai to assess the risk of the pending repository (system)
+    /// upgrade. Runs before pacman applies the system update so it covers the
+    /// packages that `check_upgrade_risk` (AUR only, non combined mode) misses.
+    /// Warning only: it never blocks or alters the upgrade.
+    async fn check_repo_upgrade_risk(&self, config: &Config) {
+        let c = config.color;
+
+        let pkgs = match repo_upgrades(config) {
+            Ok(pkgs) => pkgs,
+            Err(err) => {
+                print_error(c.error, err);
+                return;
+            }
+        };
+
+        let local = config.alpm.localdb();
+        let mut lines = Vec::new();
+
+        for pkg in &pkgs {
+            let old = local.pkg(pkg.name()).ok().map(|p| p.version().to_string());
+            lines.push(format!(
+                "{}\t{}\t({})",
+                pkg.name(),
+                old.unwrap_or_default(),
+                pkg.db().unwrap().name()
+            ));
+        }
+
+        if lines.is_empty() {
+            return;
+        }
+
+        let upgrades = lines.join("\n");
+        let news = match news::news_text(config).await {
+            Ok(news) => news,
+            Err(err) => {
+                print_error(c.error, err);
+                String::new()
+            }
+        };
+
+        let mut executor = crate::ai_tools::ToolExecutor::new(config);
+
+        let risk = match ai::update_risk(config, &upgrades, &news, &mut executor).await {
+            Ok(risk) => risk,
+            Err(err) => {
+                print_error(c.error, err);
+                return;
+            }
+        };
+
+        println!();
+        risk.print(config);
+        println!();
     }
 
     async fn download_pkgbuilds(&mut self, config: &Config, bases: &Bases) -> Result<()> {
@@ -922,6 +1071,10 @@ impl Installer {
                     || !repo_targets.is_empty()
                     || config.mode == Mode::REPO)
             {
+                if config.ai && config.args.has_arg("u", "sysupgrade") {
+                    config.init_alpm()?;
+                    self.check_repo_upgrade_risk(config).await;
+                }
                 let targets = repo_targets.iter().map(|t| t.to_string()).collect();
                 repo_targets.clear();
                 self.done_something = true;
@@ -937,7 +1090,7 @@ impl Installer {
         config.init_alpm()?;
 
         if self.refresh != 0 {
-            config.pkgbuild_repos.refresh(config)?;
+            config.pkgbuild_repos.refresh(config).await?;
             self.done_something = true;
         }
         self.resolve_targets(config, &repo_targets, &aur_targets)
@@ -970,6 +1123,10 @@ impl Installer {
                 config.args.args.push(arg);
             }
             self.upgrades = upgrades;
+
+            if config.ai && self.should_check_upgrade(config) {
+                self.check_upgrade_risk(config).await?;
+            }
         }
 
         let mut targets = repo_targets.to_vec();
@@ -1167,7 +1324,7 @@ impl Installer {
                     Base::Pkgbuild(_) => None,
                 })
                 .collect::<Vec<_>>();
-            review(config, &config.fetch, &pkgs)?;
+            review(config, &config.fetch, &pkgs).await?;
         }
 
         let arch = config
@@ -1706,14 +1863,16 @@ fn print_dir(
     Ok(())
 }
 
-pub fn review(config: &Config, fetch: &aur_fetch::Fetch, pkgs: &[&str]) -> Result<()> {
+pub async fn review(config: &Config, fetch: &aur_fetch::Fetch, pkgs: &[&str]) -> Result<()> {
     let c = config.color;
 
     if pkgs.is_empty() {
         return Ok(());
     }
     if !config.no_confirm {
-        if let Some(ref fm) = config.fm {
+        if config.ai && config.ai_review {
+            ai_review(config, fetch, pkgs).await?;
+        } else if let Some(ref fm) = config.fm {
             let _view = file_manager(config, fetch, fm, pkgs)?;
 
             if !ask(config, &tr!("Accept changes?"), true) {
@@ -1797,6 +1956,230 @@ pub fn review(config: &Config, fetch: &aur_fetch::Fetch, pkgs: &[&str]) -> Resul
     }
 
     fetch.mark_seen(pkgs)?;
+    Ok(())
+}
+
+/// Files bigger than this are summarised rather than sent in full.
+const MAX_REVIEW_FILE: u64 = 128 * 1024;
+
+/// Collects the reviewable text of a package for the ai.
+///
+/// Mirrors what [`print_dir`] shows a human: skips `.git` and `.SRCINFO`, notes
+/// symlinks, and refuses to inline anything that is not valid UTF-8.
+fn review_files(dir: &Path) -> Result<(String, bool)> {
+    let mut out = String::new();
+    let mut binary = false;
+
+    let mut entries = read_dir(dir)
+        .with_context(|| tr!("failed to read dir: {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|e| e.file_name());
+
+    // PKGBUILD first: it is what the review is really about.
+    entries.sort_by_key(|e| e.file_name() != OsStr::new("PKGBUILD"));
+
+    for file in entries {
+        let name = file.file_name();
+
+        if name == OsStr::new(".git") || name == OsStr::new(".SRCINFO") {
+            continue;
+        }
+
+        let ty = file.file_type()?;
+        let display = name.to_string_lossy();
+
+        if ty.is_symlink() {
+            let _ = writeln!(
+                out,
+                "--- {} (symlink to {}) ---",
+                display,
+                read_link(file.path())?.display()
+            );
+            continue;
+        }
+
+        if ty.is_dir() {
+            let _ = writeln!(out, "--- {}/ (directory) ---", display);
+            continue;
+        }
+
+        let len = file.metadata()?.len();
+        if len > MAX_REVIEW_FILE {
+            let _ = writeln!(out, "--- {} ({} bytes, not shown) ---", display, len);
+            binary = true;
+            continue;
+        }
+
+        let content = std::fs::read(file.path())
+            .with_context(|| tr!("failed to open: {}", file.path().display().to_string()))?;
+
+        match String::from_utf8(content) {
+            Ok(text) => {
+                let _ = writeln!(out, "--- {} ---\n{}", display, text.trim_end());
+            }
+            Err(_) => {
+                // A binary in the git clone itself is worth flagging loudly.
+                let _ = writeln!(out, "--- {} ({} bytes, binary) ---", display, len);
+                binary = true;
+            }
+        }
+    }
+
+    Ok((out, binary))
+}
+
+/// The exact bytes an ai patch would be written as.
+///
+/// Models routinely drop the trailing newline, so it is added back here rather
+/// than at the point of writing. That keeps the previewed diff identical to what
+/// actually lands on disk.
+fn patch_bytes(patch: &str) -> String {
+    if patch.ends_with('\n') {
+        patch.to_string()
+    } else {
+        format!("{}\n", patch)
+    }
+}
+
+/// Replaces a package's PKGBUILD with an ai proposed version.
+fn apply_patch(config: &Config, dir: &Path, patch: &str) -> Result<()> {
+    let path = dir.join("PKGBUILD");
+
+    // Write and rename so an interrupted write can not leave a partial PKGBUILD.
+    let mut tmp = tempfile::Builder::new()
+        .prefix("PKGBUILD.paru")
+        .tempfile_in(dir)?;
+    tmp.write_all(patch_bytes(patch).as_bytes())?;
+    tmp.flush()?;
+    tmp.as_file().set_permissions(Permissions::from_mode(0o644))?;
+    tmp.persist(&path)
+        .map_err(|e| e.error)
+        .with_context(|| tr!("failed to write: {}", path.display().to_string()))?;
+
+    // .SRCINFO must match or later version checks read stale data.
+    let output = exec::makepkg_output(config, dir, &["--printsrcinfo"])?;
+    std::fs::write(dir.join(".SRCINFO"), output.stdout)
+        .with_context(|| tr!("failed to write: {}", dir.join(".SRCINFO").display()))?;
+
+    Ok(())
+}
+
+/// Shows the ai's proposed PKGBUILD as a diff against the current one.
+fn print_patch_diff(config: &Config, dir: &Path, patch: &str) -> Result<()> {
+    let mut tmp = tempfile::Builder::new().prefix("paru-ai").tempfile()?;
+    tmp.write_all(patch_bytes(patch).as_bytes())?;
+    tmp.flush()?;
+
+    let mut cmd = Command::new("diff");
+    cmd.arg("-u");
+    if config.color.enabled {
+        cmd.arg("--color=always");
+    }
+    cmd.arg("--label")
+        .arg("PKGBUILD")
+        .arg(dir.join("PKGBUILD"))
+        .arg("--label")
+        .arg(tr!("PKGBUILD (ai)"))
+        .arg(tmp.path());
+
+    // diff exits 1 when files differ, which is the normal case here.
+    let output = Command::new(cmd.get_program())
+        .args(cmd.get_args())
+        .output()
+        .with_context(|| tr!("failed to run: {}", "diff"))?;
+
+    for line in output.stdout.lines() {
+        println!("    {}", line?);
+    }
+
+    Ok(())
+}
+
+/// Reviews PKGBUILDs with the ai in place of paging the diff by hand.
+///
+/// The ai explains what each package does and flags anything dangerous, but the
+/// decision stays with the user: the verdict only chooses which way the
+/// confirmation defaults.
+async fn ai_review(config: &Config, fetch: &aur_fetch::Fetch, pkgs: &[&str]) -> Result<()> {
+    let c = config.color;
+
+    let unseen = fetch.unseen(pkgs)?;
+    if unseen.is_empty() {
+        printtr!(" nothing new to review");
+        return Ok(());
+    }
+
+    let has_diff = fetch.has_diff(&unseen)?;
+    let diffs = fetch.diff(&has_diff, false)?;
+
+    let mut default_accept = true;
+    let mut patched = Vec::new();
+
+    let mut executor = crate::ai_tools::ToolExecutor::new(config);
+
+    for &pkg in &unseen {
+        let dir = fetch.clone_dir.join(pkg);
+
+        let files = match review_files(&dir) {
+            Ok((files, _)) => files,
+            Err(err) => {
+                print_error(c.error, err);
+                default_accept = false;
+                continue;
+            }
+        };
+
+        let mut prompt = files;
+
+        // An update to an already reviewed package: the diff is the interesting
+        // part, so give the ai both.
+        if let Some(pos) = has_diff.iter().position(|&p| p == pkg) {
+            if let Some(diff) = diffs.get(pos) {
+                let _ = write!(prompt, "\n--- changes since last review ---\n{}", diff);
+            }
+        }
+
+        let review = match ai::review_with_tools(config, pkg, &prompt, &mut executor).await {
+            Ok(review) => review,
+            Err(err) => {
+                print_error(c.error, err);
+                // Never silently pass a package the ai could not vet.
+                default_accept = false;
+                continue;
+            }
+        };
+
+        review.print(config, pkg);
+
+        if !review.verdict.default_accept() {
+            default_accept = false;
+        }
+
+        if let Some(patch) = &review.patch {
+            if config.ai_edit {
+                println!();
+                if print_patch_diff(config, &dir, patch).is_ok()
+                    && ask(
+                        config,
+                        &tr!("Apply the AI's changes to {}'s PKGBUILD?", pkg),
+                        false,
+                    )
+                {
+                    apply_patch(config, &dir, patch)?;
+                    patched.push(pkg);
+                }
+            }
+        }
+    }
+
+    if !ask(config, &tr!("Accept changes?"), default_accept) {
+        return Status::err(1);
+    }
+
+    if config.save_changes && !patched.is_empty() {
+        fetch.commit(&patched, "paru ai review")?;
+    }
+
     Ok(())
 }
 
@@ -2184,4 +2567,17 @@ fn needs_install(config: &Config, base: &Base, version: &str, pkg: &str) -> bool
 
 fn is_ver_char(c: char) -> bool {
     matches!(c, '<' | '=' | '>')
+}
+
+#[cfg(test)]
+mod ai_tests {
+    use super::patch_bytes;
+
+    #[test]
+    fn patch_gains_a_trailing_newline() {
+        // Models routinely omit it; the preview and the written file must agree.
+        assert_eq!(patch_bytes("pkgname=a"), "pkgname=a\n");
+        assert_eq!(patch_bytes("pkgname=a\n"), "pkgname=a\n");
+        assert_eq!(patch_bytes(""), "\n");
+    }
 }

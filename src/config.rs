@@ -187,6 +187,37 @@ pub trait ConfigEnum: Sized + PartialEq + Copy + Clone + fmt::Debug + 'static {
 
 type ConfigEnumValues<T> = &'static [(&'static str, T)];
 
+/// A string that never shows its contents when formatted.
+///
+/// Config is dumped via `log::debug!("{:#?}", config)` when PARU_DEBUG is set,
+/// so any secret stored in it must not have a revealing Debug impl.
+#[derive(Default, Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new<S: Into<String>>(s: S) -> Self {
+        Secret(s.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            f.write_str("\"\"")
+        } else {
+            f.write_str("\"***\"")
+        }
+    }
+}
+
 #[derive(Debug, SmartDefault, PartialEq, Eq)]
 pub enum Sign {
     #[default]
@@ -547,6 +578,25 @@ pub struct Config {
 
     #[default(PkgbuildRepos::new(aur_fetch::Fetch::with_cache_dir("repo")))]
     pub pkgbuild_repos: PkgbuildRepos,
+
+    // ai
+    pub ai: bool,
+    #[default = "https://api.openai.com/v1"]
+    pub ai_url: String,
+    #[default = "gpt-4o-mini"]
+    pub ai_model: String,
+    pub ai_key: Secret,
+    pub ai_key_file: Option<PathBuf>,
+    pub ai_tavily_key: Secret,
+    pub ai_headers: Vec<(String, String)>,
+    #[default = true]
+    pub ai_review: bool,
+    #[default = true]
+    pub ai_edit: bool,
+    #[default = 120]
+    pub ai_timeout: u64,
+    #[default = 15]
+    pub ai_connect_timeout: u64,
 }
 
 impl Ini for Config {
@@ -556,7 +606,9 @@ impl Ini for Config {
         let err = match cb.kind {
             CallbackKind::Section(section) => {
                 self.section = Some(section.to_string());
-                if !matches!(section, "options" | "bin" | "env")
+                if section == "ai" {
+                    self.ai = true;
+                } else if !matches!(section, "options" | "bin" | "env")
                     && self.pkgbuild_repos.repo(section).is_none()
                 {
                     if matches!(section, "local" | "aur" | "pkg" | "base") || section.contains('.')
@@ -839,6 +891,41 @@ then initialise it with:
             remove_var("PKGEXT");
         }
 
+        self.init_ai()?;
+
+        Ok(())
+    }
+
+    fn init_ai(&mut self) -> Result<()> {
+        if !self.ai {
+            return Ok(());
+        }
+
+        if self.ai_key.is_empty() {
+            if let Some(path) = &self.ai_key_file {
+                let path = expand_tilde(path);
+                let key = std::fs::read_to_string(&path)
+                    .with_context(|| tr!("failed to open: {}", path.display().to_string()))?;
+                self.ai_key = Secret::new(key.trim());
+            }
+        }
+
+        if self.ai_key.is_empty() {
+            if let Ok(key) = var("PARU_AI_KEY") {
+                self.ai_key = Secret::new(key.trim());
+            }
+        }
+
+        if self.ai_tavily_key.is_empty() {
+            if let Ok(key) = var("PARU_TAVILY_KEY") {
+                self.ai_tavily_key = Secret::new(key.trim());
+            }
+        }
+
+        self.ai_url = self.ai_url.trim_end_matches('/').to_string();
+        ensure!(!self.ai_url.is_empty(), tr!("ai url can not be empty"));
+        ensure!(!self.ai_model.is_empty(), tr!("ai model can not be empty"));
+
         Ok(())
     }
 
@@ -963,8 +1050,54 @@ then initialise it with:
             "options" => self.parse_option(key, value),
             "bin" => self.parse_bin(key, value),
             "env" => self.parse_env(key, value),
+            "ai" => self.parse_ai(key, value),
             repo => self.parse_repo(repo, key, value),
         }
+    }
+
+    fn parse_ai(&mut self, key: &str, value: Option<&str>) -> Result<()> {
+        let mut ok = true;
+
+        match key {
+            "Review" => self.ai_review = true,
+            "NoReview" => self.ai_review = false,
+            "Edit" => self.ai_edit = true,
+            "NoEdit" => self.ai_edit = false,
+            _ => ok = false,
+        }
+
+        if ok {
+            ensure!(
+                value.is_none(),
+                tr!("option '{}' does not take a value", key)
+            );
+            return Ok(());
+        }
+
+        let value = value
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!(tr!("value can not be empty for key '{}'", key)));
+
+        match key {
+            "Url" => self.ai_url = value?.trim_end_matches('/').to_string(),
+            "Model" => self.ai_model = value?,
+            "Key" => self.ai_key = Secret::new(value?),
+            "KeyFile" => self.ai_key_file = Some(PathBuf::from(value?)),
+            "TavilyKey" => self.ai_tavily_key = Secret::new(value?),
+            "Header" => {
+                let value = value?;
+                let (k, v) = value
+                    .split_once(':')
+                    .with_context(|| tr!("header must be in the form 'Key: Value'"))?;
+                self.ai_headers
+                    .push((k.trim().to_string(), v.trim().to_string()));
+            }
+            "Timeout" => self.ai_timeout = value?.parse()?,
+            "ConnectTimeout" => self.ai_connect_timeout = value?.parse()?,
+            _ => eprintln!("{}", tr!("error: unknown option '{}' in section [ai]", key)),
+        }
+
+        Ok(())
     }
 
     fn parse_repo(&mut self, repo: &str, key: &str, value: Option<&str>) -> Result<()> {
@@ -1040,6 +1173,7 @@ then initialise it with:
 
         match key {
             "SkipReview" => self.skip_review = true,
+            "Ai" => self.ai = true,
             "BottomUp" => self.sort_mode = SortMode::BottomUp,
             "AurOnly" => self.mode = Mode::AUR,
             "PkgbuildsOnly" => self.mode = Mode::PKGBUILD,
@@ -1168,6 +1302,17 @@ then initialise it with:
     }
 }
 
+fn expand_tilde(path: &Path) -> PathBuf {
+    let Ok(rest) = path.strip_prefix("~") else {
+        return path.to_path_buf();
+    };
+
+    match dirs::home_dir() {
+        Some(home) => home.join(rest),
+        None => path.to_path_buf(),
+    }
+}
+
 pub fn version() {
     let ver = option_env!("PARU_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     print!("paru v{}", ver);
@@ -1239,5 +1384,28 @@ fn log(level: LogLevel, msg: &str, color: &mut Colors) {
         LogLevel::ERROR => eprint!("{} {}", err.paint("error:"), msg),
         LogLevel::DEBUG if alpm_debug_enabled() => eprint!("debug: <alpm> {}", msg),
         _ => (),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Secret;
+
+    #[test]
+    fn secret_never_shows_its_value() {
+        let secret = Secret::new("sk-abc123-super-private");
+
+        // Config is dumped with {:#?} under PARU_DEBUG, so this must not leak.
+        assert_eq!(format!("{:?}", secret), "\"***\"");
+        assert!(!format!("{:#?}", secret).contains("sk-abc123"));
+        assert_eq!(secret.expose(), "sk-abc123-super-private");
+        assert!(!secret.is_empty());
+    }
+
+    #[test]
+    fn empty_secret_is_distinguishable() {
+        let secret = Secret::default();
+        assert_eq!(format!("{:?}", secret), "\"\"");
+        assert!(secret.is_empty());
     }
 }

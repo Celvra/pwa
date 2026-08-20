@@ -73,6 +73,78 @@ pub async fn news(config: &Config) -> Result<i32> {
     }
 }
 
+/// Recent news as plain text, for feeding the ai a grounding corpus.
+pub async fn news_text(config: &Config) -> Result<String> {
+    let url = config.arch_url.join("feeds/news")?;
+    let client = config.raur.client();
+
+    let resp = client.get(url.clone()).send().await?;
+    if !resp.status().is_success() {
+        bail!("{}: {}", url, resp.status());
+    }
+    let bytes = resp.bytes().await?;
+    let channel = Channel::read_from(bytes.as_ref())?;
+
+    let mut out = String::new();
+
+    for item in channel.into_items().into_iter().rev() {
+        let date = item.pub_date().unwrap_or_default();
+
+        match chrono::DateTime::parse_from_rfc2822(date) {
+            Ok(date) => {
+                if config.news < 2 && date.timestamp() < newest_pkg(config) {
+                    continue;
+                }
+                let _ = std::fmt::Write::write_fmt(
+                    &mut out,
+                    format_args!("{} ", date.format("%F")),
+                );
+            }
+            Err(_) => out.push_str("(no date) "),
+        }
+
+        let no_title = tr!("No Title");
+        let title = item.title().unwrap_or(no_title.as_str());
+        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{}\n", title));
+
+        let desc = item.description().unwrap_or_default();
+        let text = html_to_text(desc);
+        out.push_str(&text);
+        out.push('\n');
+    }
+
+    Ok(out.trim().to_string())
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut words = String::with_capacity(html.len());
+    let mut chars = html.chars();
+    while let Some(c) = chars.next() {
+        if c == '<' {
+            let mut tag = String::new();
+            for c in chars.by_ref() {
+                if c == '>' {
+                    break;
+                }
+                tag.push(c);
+            }
+            if tag == "/p" {
+                words.push('\n');
+            } else if tag == "/code" {
+                words.push(' ');
+            }
+        } else {
+            words.push(c);
+        }
+    }
+    let mut words = decode_html(&words).unwrap_or(words);
+    // Collapse runs of blank lines for a compact corpus.
+    while words.contains("\n\n\n") {
+        words = words.replace("\n\n\n", "\n\n");
+    }
+    words.trim().to_string()
+}
+
 fn parse_html(config: &Config, html: &str) {
     let code = config.color.code;
     let mut words = String::with_capacity(html.len());

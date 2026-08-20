@@ -4,7 +4,7 @@ use crate::repo;
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{stderr, stdin, stdout, BufRead, Write};
+use std::io::{stderr, stdin, stdout, BufRead, Read, Write};
 use std::mem::take;
 use std::ops::Range;
 use std::os::fd::{AsFd, OwnedFd};
@@ -13,8 +13,10 @@ use alpm::{Package, PackageReason};
 use alpm_utils::depends::{satisfies_dep, satisfies_provide};
 use alpm_utils::{AsTarg, DbListExt, Targ};
 use anyhow::Result;
+use nix::sys::termios::{tcgetattr, tcsetattr, LocalFlags, SetArg};
 use nix::unistd::{dup2_stdin, dup2_stdout};
 use tr::tr;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug)]
 pub struct NumberMenu<'a> {
@@ -148,6 +150,56 @@ pub fn ask(config: &Config, question: &str, default: bool) -> bool {
     }
 }
 
+/// The answer to a three way prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YesNoEdit {
+    Yes,
+    No,
+    /// The user wants to keep talking to the ai.
+    Edit,
+}
+
+/// Asks a question that can also be answered by continuing the conversation.
+///
+/// `yes` controls whether y is offered at all: when the ai found nothing there
+/// is nothing to accept, so the prompt is only n or e.
+pub fn ask_yne(config: &Config, question: &str, yes: bool) -> YesNoEdit {
+    let action = config.color.action;
+    let bold = config.color.bold;
+
+    let options = if yes { "[Y/n/e]" } else { "[N/e]" };
+    print!(
+        "{} {} {} ",
+        action.paint("::"),
+        bold.paint(question),
+        bold.paint(options)
+    );
+    let _ = stdout().lock().flush();
+
+    if config.no_confirm {
+        println!();
+        return if yes { YesNoEdit::Yes } else { YesNoEdit::No };
+    }
+
+    let mut input = String::new();
+    let _ = stdin().read_line(&mut input);
+    let input = input.trim().to_lowercase();
+
+    if input == "e" || input == tr!("e") {
+        YesNoEdit::Edit
+    } else if input.is_empty() {
+        if yes {
+            YesNoEdit::Yes
+        } else {
+            YesNoEdit::No
+        }
+    } else if input == tr!("y") || input == tr!("yes") {
+        YesNoEdit::Yes
+    } else {
+        YesNoEdit::No
+    }
+}
+
 pub fn input(config: &Config, question: &str) -> String {
     let action = config.color.action;
     let bold = config.color.bold;
@@ -158,10 +210,145 @@ pub fn input(config: &Config, question: &str) -> String {
         println!();
         return "".into();
     }
-    let stdin = stdin();
-    let mut input = String::new();
-    let _ = stdin.read_line(&mut input);
-    input
+
+    let mut stdin_handle = std::io::stdin();
+    let original_termios = match tcgetattr(&stdin_handle) {
+        Ok(t) => t,
+        Err(_) => {
+            let mut input = String::new();
+            let _ = stdin_handle.read_line(&mut input);
+            return input;
+        }
+    };
+
+    let mut raw = original_termios.clone();
+    raw.local_flags.remove(LocalFlags::ICANON | LocalFlags::ECHO);
+    let _ = tcsetattr(&stdin_handle, SetArg::TCSANOW, &raw);
+
+    let prompt = format!("{} ", action.paint("::"));
+
+    // The buffer is a list of characters, not bytes. Indexing a String by byte
+    // offset panics the moment a multi byte character is typed, so the cursor
+    // counts characters and only ever converts when drawing.
+    let mut buffer: Vec<char> = Vec::new();
+    let mut cursor = 0usize;
+
+    let restore = |handle: &std::io::Stdin| {
+        let _ = tcsetattr(handle, SetArg::TCSANOW, &original_termios);
+    };
+
+    // Redraws the line and leaves the cursor where the caller thinks it is.
+    // \x1b[K clears whatever the previous, longer line left behind.
+    let redraw = |buffer: &[char], cursor: usize| {
+        let text: String = buffer.iter().collect();
+        print!("\r{}{}\x1b[K", prompt, text);
+
+        let tail: String = buffer[cursor..].iter().collect();
+        let back = UnicodeWidthStr::width(tail.as_str());
+        if back > 0 {
+            print!("\x1b[{}D", back);
+        }
+        let _ = stdout().lock().flush();
+    };
+
+    loop {
+        let mut byte = [0u8; 1];
+        if stdin_handle.read_exact(&mut byte).is_err() {
+            restore(&stdin_handle);
+            return buffer.into_iter().collect();
+        }
+
+        match byte[0] {
+            b'\n' | b'\r' => {
+                print!("\r\n");
+                let _ = stdout().lock().flush();
+                restore(&stdin_handle);
+                return buffer.into_iter().collect();
+            }
+            // Backspace only ever removes a character the user typed, so the
+            // prompt can not be eaten.
+            0x7F | 0x08 => {
+                if cursor > 0 {
+                    cursor -= 1;
+                    buffer.remove(cursor);
+                    redraw(&buffer, cursor);
+                }
+            }
+            // Ctrl-D on an empty line ends the prompt, like a shell.
+            0x04 => {
+                if buffer.is_empty() {
+                    print!("\r\n");
+                    let _ = stdout().lock().flush();
+                    restore(&stdin_handle);
+                    return String::new();
+                }
+            }
+            // Ctrl-U clears the line.
+            0x15 => {
+                buffer.clear();
+                cursor = 0;
+                redraw(&buffer, cursor);
+            }
+            0x1B => {
+                let mut seq = [0u8; 2];
+                if stdin_handle.read_exact(&mut seq).is_ok() && seq[0] == b'[' {
+                    match seq[1] {
+                        b'D' if cursor > 0 => {
+                            cursor -= 1;
+                            redraw(&buffer, cursor);
+                        }
+                        b'C' if cursor < buffer.len() => {
+                            cursor += 1;
+                            redraw(&buffer, cursor);
+                        }
+                        // Home and End arrive as \x1b[H and \x1b[F on most terminals.
+                        b'H' => {
+                            cursor = 0;
+                            redraw(&buffer, cursor);
+                        }
+                        b'F' => {
+                            cursor = buffer.len();
+                            redraw(&buffer, cursor);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Remaining control characters are not editing keys.
+            b if b < 0x20 => {}
+            first => {
+                // A UTF-8 sequence is one leading byte plus its continuations.
+                let extra = if first < 0x80 {
+                    0
+                } else if first & 0xE0 == 0xC0 {
+                    1
+                } else if first & 0xF0 == 0xE0 {
+                    2
+                } else if first & 0xF8 == 0xF0 {
+                    3
+                } else {
+                    // A stray continuation byte; there is nothing to insert.
+                    continue;
+                };
+
+                let mut bytes = [0u8; 4];
+                bytes[0] = first;
+                if extra > 0 && stdin_handle.read_exact(&mut bytes[1..=extra]).is_err() {
+                    continue;
+                }
+
+                let Ok(text) = std::str::from_utf8(&bytes[..=extra]) else {
+                    continue;
+                };
+
+                for ch in text.chars() {
+                    buffer.insert(cursor, ch);
+                    cursor += 1;
+                }
+                redraw(&buffer, cursor);
+            }
+        }
+    }
 }
 
 pub fn unneeded_pkgs(config: &Config, keep_optional: bool) -> Vec<&str> {
@@ -209,6 +396,59 @@ pub fn unneeded_pkgs(config: &Config, keep_optional: bool) -> Vec<&str> {
     }
 
     deps.into_keys().collect::<Vec<_>>()
+}
+
+/// Whether an input should be handled by [`NumberMenu`] rather than treated as
+/// natural language.
+///
+/// Deliberately conservative: anything the number menu understands today must
+/// still be answered yes here so enabling the ai layer never changes how an
+/// existing selection is parsed. A word only counts as natural language when it
+/// is neither a number range nor the name of something in the list.
+pub fn is_number_menu(input: &str, words: &[&str]) -> bool {
+    let input = input.trim();
+
+    if input.is_empty() {
+        return true;
+    }
+
+    let mut any = false;
+
+    for word in input
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+    {
+        any = true;
+        let word = word.trim_start_matches('^');
+
+        if word.is_empty() {
+            continue;
+        }
+
+        // 5 or 2-7
+        let numeric = match word.split_once('-') {
+            Some((start, end)) => {
+                !start.is_empty()
+                    && !end.is_empty()
+                    && start.chars().all(|c| c.is_ascii_digit())
+                    && end.chars().all(|c| c.is_ascii_digit())
+            }
+            None => word.chars().all(|c| c.is_ascii_digit()),
+        };
+
+        if numeric {
+            continue;
+        }
+
+        // A repo or package name that was printed in the menu.
+        if words.contains(&word) {
+            continue;
+        }
+
+        return false;
+    }
+
+    any
 }
 
 impl<'a> NumberMenu<'a> {
@@ -394,9 +634,96 @@ pub fn is_arch_repo(name: &str) -> bool {
             | "core"
             | "extra"
             | "community"
-            | "multilib"
             | "core-testing"
             | "extra-testing"
             | "multilib-testing"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_number_menu, YesNoEdit};
+
+    const WORDS: &[&str] = &["core", "extra", "aur", "chromium"];
+
+    /// The answer parsing used by `ask_yne`, kept in step with it so the three
+    /// way prompt can be tested without a terminal.
+    fn parse_yne(input: &str, yes: bool) -> YesNoEdit {
+        let input = input.trim().to_lowercase();
+
+        if input == "e" {
+            YesNoEdit::Edit
+        } else if input.is_empty() {
+            if yes {
+                YesNoEdit::Yes
+            } else {
+                YesNoEdit::No
+            }
+        } else if input == "y" || input == "yes" {
+            YesNoEdit::Yes
+        } else {
+            YesNoEdit::No
+        }
+    }
+
+    #[test]
+    fn e_always_continues_the_conversation() {
+        assert_eq!(parse_yne("e", true), YesNoEdit::Edit);
+        assert_eq!(parse_yne("e", false), YesNoEdit::Edit);
+        assert_eq!(parse_yne(" E \n", true), YesNoEdit::Edit);
+    }
+
+    #[test]
+    fn enter_takes_the_offered_default() {
+        // With a selection on offer, enter accepts it.
+        assert_eq!(parse_yne("", true), YesNoEdit::Yes);
+        // With nothing to install there is no yes to default to.
+        assert_eq!(parse_yne("", false), YesNoEdit::No);
+    }
+
+    #[test]
+    fn anything_else_declines() {
+        assert_eq!(parse_yne("n", true), YesNoEdit::No);
+        assert_eq!(parse_yne("no", true), YesNoEdit::No);
+        assert_eq!(parse_yne("q", true), YesNoEdit::No);
+        assert_eq!(parse_yne("y", true), YesNoEdit::Yes);
+    }
+
+    #[test]
+    fn number_menu_inputs_are_not_natural_language() {
+        // Everything NumberMenu handles today must keep being parsed as numbers.
+        assert!(is_number_menu("1", WORDS));
+        assert!(is_number_menu("1 2 3", WORDS));
+        assert!(is_number_menu("1,2,3", WORDS));
+        assert!(is_number_menu("1-3", WORDS));
+        assert!(is_number_menu("1-3 5 7-9", WORDS));
+        assert!(is_number_menu("^2", WORDS));
+        assert!(is_number_menu("1-5 ^3", WORDS));
+        assert!(is_number_menu("  4  ", WORDS));
+        assert!(is_number_menu("", WORDS));
+        assert!(is_number_menu("   ", WORDS));
+    }
+
+    #[test]
+    fn listed_names_are_not_natural_language() {
+        assert!(is_number_menu("core", WORDS));
+        assert!(is_number_menu("^aur", WORDS));
+        assert!(is_number_menu("1-3 core", WORDS));
+    }
+
+    #[test]
+    fn prose_is_natural_language() {
+        assert!(!is_number_menu("the browser with drm support", WORDS));
+        assert!(!is_number_menu("装一个浏览器", WORDS));
+        assert!(!is_number_menu("1 and also a video player", WORDS));
+        assert!(!is_number_menu("firefox", WORDS));
+        assert!(!is_number_menu("what is the difference?", WORDS));
+    }
+
+    #[test]
+    fn malformed_ranges_are_natural_language() {
+        assert!(!is_number_menu("1-", WORDS));
+        assert!(!is_number_menu("-3", WORDS));
+        assert!(!is_number_menu("1-a", WORDS));
+    }
 }

@@ -273,6 +273,11 @@ This option disables that behavior, keeping the both all versions and only updat
 .B SkipReview
 Skip the review process.
 
+.TP
+.B Ai
+Enable the AI layer. Defining an \fB[ai]\fR section enables it as well, so this
+is only needed when the defaults are already correct.
+
 .SH BIN
 Options belonging to the [bin] section.
 
@@ -389,6 +394,76 @@ built then the build will be skipped but this command will still be run for
 that package.
 
 The variables PKGBASE and VERSION will be set for the command to use.
+
+.SH AI
+Options belonging to the [ai] section.
+
+Defining this section enables the AI layer. Without it paru behaves exactly as it
+does with no AI support at all.
+
+Any OpenAI compatible endpoint may be used, including local servers such as
+Ollama and llama.cpp. Requests are streamed.
+
+Two things are worth understanding before enabling this. Reviewing a package
+sends its PKGBUILD, install scripts, patches and diffs to the configured
+endpoint. And the AI's verdict is advice, not a security boundary: it decides
+which way the confirmation prompt defaults, never whether a package is installed.
+
+.TP
+.B Url = https://api.openai.com/v1
+Base URL of the API. The \fB/chat/completions\fR path is appended to it.
+Defaults to \fBhttps://api.openai.com/v1\fR.
+
+.TP
+.B Model = model-name
+Model to use. Defaults to \fBgpt-4o-mini\fR.
+
+.TP
+.B Key = key
+API key to send as a bearer token. When no key is configured the
+\fBAuthorization\fR header is omitted entirely, which is what local servers
+expect.
+
+Note that paru.conf may be world readable. Prefer \fBKeyFile\fR or the
+\fBPARU_AI_KEY\fR environment variable.
+
+.TP
+.B KeyFile = path/to/file
+Read the API key from a file, ignoring surrounding whitespace. A leading \fB~\fR
+is expanded to your home directory.
+
+.TP
+.B TavilyKey = key
+API key for the Tavily web search API, used by the AI's web search tool. Without
+it the tool falls back to scraping public search pages. May also be given through
+the \fBPARU_TAVILY_KEY\fR environment variable.
+
+.TP
+.B Header = Key: Value
+Send an extra HTTP header with every request. May be given more than once, for
+providers that require headers beyond the bearer token.
+
+.TP
+.B Review
+.TP
+.B NoReview
+Whether the AI reviews PKGBUILDs in place of paging the diff. Enabled by default.
+
+.TP
+.B Edit
+.TP
+.B NoEdit
+Whether the AI may propose fixes to a PKGBUILD. Enabled by default. Proposed
+changes are shown as a diff and applied only after you confirm them.
+
+.TP
+.B Timeout = N
+Timeout in seconds for a single request. Defaults to 120. Local models may need
+considerably more.
+
+.TP
+.B ConnectTimeout = N
+Timeout in seconds for establishing a connection. Defaults to 15.
 
 .SH ENV
 Set environment variables.

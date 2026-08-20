@@ -262,3 +262,15 @@ complete -c $progname -n "not $noopt" -l localrepo -d 'Build packages in a local
 complete -c $progname -n "not $noopt" -l nolocalrepo -d "Don't build packages in a local repo" -f
 complete -c $progname -n "not $noopt" -l skipreview -d 'Skip the review process' -f
 complete -c $progname -n "not $noopt" -l review -d "Don't skip the review process" -f
+complete -c $progname -n "not $noopt" -l ai -d 'Enable the AI layer' -f
+complete -c $progname -n "not $noopt" -l noai -d 'Disable the AI layer' -f
+complete -c $progname -n "not $noopt" -l aiurl -d 'Base URL of an OpenAI compatible API' -f
+complete -c $progname -n "not $noopt" -l aimodel -d 'Model to use for AI requests' -f
+complete -c $progname -n "not $noopt" -l aikey -d 'API key to use for AI requests' -f
+complete -c $progname -n "not $noopt" -l aikeyfile -d 'Read the AI API key from a file' -r
+complete -c $progname -n "not $noopt" -l aitavilykey -d 'API key for the Tavily web search' -r
+complete -c $progname -n "not $noopt" -l aireview -d 'Let the AI review PKGBUILDs' -f
+complete -c $progname -n "not $noopt" -l noaireview -d "Don't let the AI review PKGBUILDs" -f
+complete -c $progname -n "not $noopt" -l aiedit -d 'Let the AI propose PKGBUILD fixes' -f
+complete -c $progname -n "not $noopt" -l noaiedit -d "Don't let the AI modify PKGBUILDs" -f
+complete -c $progname -n "not $noopt" -l aitimeout -d 'Timeout for AI requests' -f

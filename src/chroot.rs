@@ -8,6 +8,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tempfile::TempPath;
 
 #[derive(Debug)]
 pub struct Chroot {
@@ -73,7 +74,7 @@ impl Chroot {
         self.run_as(false, args)
     }
 
-    fn run_as<S: AsRef<OsStr>>(&self, root: bool, args: &[S]) -> Result<()> {
+    fn nspawn<S: AsRef<OsStr>>(&self, root: bool, args: &[S]) -> Result<(Command, TempPath)> {
         let dir = if root {
             self.path.join("root")
         } else {
@@ -104,6 +105,12 @@ impl Chroot {
 
         cmd.args(args);
 
+        // The temp pacman.conf must outlive the command, so hand it back.
+        Ok((cmd, tmp.into_temp_path()))
+    }
+
+    fn run_as<S: AsRef<OsStr>>(&self, root: bool, args: &[S]) -> Result<()> {
+        let (mut cmd, _tmp) = self.nspawn(root, args)?;
         exec::command(&mut cmd)?;
         Ok(())
     }

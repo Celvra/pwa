@@ -9,9 +9,9 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-pub fn remove(config: &mut Config) -> Result<i32> {
+pub async fn remove(config: &mut Config) -> Result<i32> {
     if config.interactive {
-        interactive_search_local(config)?;
+        interactive_search_local(config).await?;
     }
 
     let mut devel_info = load_devel_info(config)?.unwrap_or_default();

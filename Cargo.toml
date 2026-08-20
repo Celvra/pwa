@@ -13,6 +13,10 @@ keywords = ["archlinux", "arch", "alpm", "pacman", "aur"]
 include = ["src/**/*", "LICENSE", "README.md", "CHANGELOG.md", "help"]
 rust-version = "1.87"
 
+[[bin]]
+name = "pwa"
+path = "src/main.rs"
+
 
 [dependencies]
 alpm = "5.0.2"
@@ -34,8 +38,8 @@ globset = "0.4.18"
 htmlescape = "0.3.1"
 indicatif = "0.18.3"
 scraper = "0.25.0"
-nix = { version = "0.30.1", features = ["fs", "user"] }
-reqwest = { version = "0.11.27", features = ["gzip", "socks"] }
+nix = { version = "0.30.1", features = ["fs", "user", "term"] }
+reqwest = { version = "0.11.27", features = ["gzip", "socks", "stream"] }
 rss = { version = "2.0.12", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -58,6 +62,7 @@ signal-hook = "0.4.1"
 bitflags = "2.10.0"
 toml = { version = "0.9.10", features = ["preserve_order"] }
 flate2 = "1.1.5"
+crossterm = "0.27.0"
 
 [profile.release]
 codegen-units = 1

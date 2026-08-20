@@ -1,3 +1,5 @@
+mod ai;
+mod ai_tools;
 mod args;
 mod chroot;
 mod clean;
@@ -212,7 +214,7 @@ async fn handle_cmd(config: &mut Config) -> Result<i32> {
         Op::Build => handle_build(config).await?,
         Op::Query => handle_query(config).await?,
         Op::Sync => handle_sync(config).await?,
-        Op::Remove => handle_remove(config)?,
+        Op::Remove => handle_remove(config).await?,
         Op::DepTest => handle_test(config).await?,
         Op::GetPkgBuild => handle_get_pkg_build(config).await?,
         Op::Show => handle_show(config).await?,
@@ -249,7 +251,7 @@ async fn handle_query(config: &mut Config) -> Result<i32> {
     let args = &config.args;
     if args.has_arg("s", "search") && config.interactive {
         let stdout = redirect_to_stderr()?;
-        interactive_search_local(config)?;
+        interactive_search_local(config).await?;
         reopen_stdout(&stdout)?;
         for pkg in &config.targets {
             print_target(pkg, config.quiet);
@@ -314,8 +316,8 @@ async fn handle_default(config: &mut Config) -> Result<i32> {
     }
 }
 
-fn handle_remove(config: &mut Config) -> Result<i32> {
-    remove::remove(config)
+async fn handle_remove(config: &mut Config) -> Result<i32> {
+    remove::remove(config).await
 }
 
 async fn handle_test(config: &Config) -> Result<i32> {

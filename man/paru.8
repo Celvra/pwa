@@ -459,6 +459,70 @@ Skip the review process.
 Don't skip the review process.
 
 .TP
+.B \-\-ai
+Enable the AI layer. See the \fBAI\fR section of
+.BR paru.conf(5)
+for the options it uses.
+
+When enabled, a package selection that is not a list of numbers is treated as a
+request in your own words and resolved by the AI, and PKGBUILD review is
+performed by the AI instead of paging the diff. The AI never installs anything on
+its own: its verdict only decides whether the confirmation prompt defaults to yes
+or no.
+
+.TP
+.B \-\-noai
+Disable the AI layer.
+
+.TP
+.B \-\-aiurl <url>
+Base URL of an OpenAI compatible API. The
+.B /chat/completions
+path is appended to it. Implies \fB\-\-ai\fR.
+
+.TP
+.B \-\-aimodel <model>
+Model to use for AI requests. Implies \fB\-\-ai\fR.
+
+.TP
+.B \-\-aikey <key>
+API key to use for AI requests. Implies \fB\-\-ai\fR.
+
+Note that this exposes the key to other users through the process list. Prefer
+\fB\-\-aikeyfile\fR, the \fBKeyFile\fR option, or the \fBPARU_AI_KEY\fR
+environment variable.
+
+.TP
+.B \-\-aikeyfile <file>
+Read the AI API key from a file. Implies \fB\-\-ai\fR.
+
+.TP
+.B \-\-aitavilykey <key>
+API key for the Tavily web search API. Without it the AI's web search tool
+falls back to scraping public search pages. Implies \fB\-\-ai\fR.
+
+.TP
+.B \-\-aireview
+Let the AI review PKGBUILDs in place of paging the diff.
+
+.TP
+.B \-\-noaireview
+Review PKGBUILDs as usual, even when the AI layer is enabled.
+
+.TP
+.B \-\-aiedit
+Allow the AI to propose fixes to a PKGBUILD. Changes are shown as a diff and
+applied only after you confirm them.
+
+.TP
+.B \-\-noaiedit
+Never let the AI modify a PKGBUILD.
+
+.TP
+.B \-\-aitimeout <seconds>
+Timeout for a single AI request. Defaults to 120.
+
+.TP
 .B \-\-upgrademenu
 Show a detailed list of updates in a similar format to pacman's VerbosePkgLists
 option. (See 

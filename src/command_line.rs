@@ -1,7 +1,7 @@
 use crate::args::{PACMAN_FLAGS, PACMAN_GLOBALS};
 use crate::config::{
-    Colors, Config, ConfigEnum, LocalRepos, Mode, Op, Sign, SortMode, YesNoAll, YesNoAllTree,
-    YesNoAsk,
+    Colors, Config, ConfigEnum, LocalRepos, Mode, Op, Secret, Sign, SortMode, YesNoAll,
+    YesNoAllTree, YesNoAsk,
 };
 
 use std::fmt;
@@ -257,6 +257,33 @@ impl Config {
             Arg::Long("interactive") => self.interactive = true,
             Arg::Long("skipreview") => self.skip_review = true,
             Arg::Long("review") => self.skip_review = false,
+            Arg::Long("ai") => self.ai = true,
+            Arg::Long("noai") => self.ai = false,
+            Arg::Long("aiurl") => {
+                self.ai_url = value?.trim_end_matches('/').to_string();
+                self.ai = true;
+            }
+            Arg::Long("aimodel") => {
+                self.ai_model = value?.to_string();
+                self.ai = true;
+            }
+            Arg::Long("aikey") => {
+                self.ai_key = Secret::new(value?);
+                self.ai = true;
+            }
+            Arg::Long("aikeyfile") => {
+                self.ai_key_file = Some(value?.into());
+                self.ai = true;
+            }
+            Arg::Long("aitavilykey") => {
+                self.ai_tavily_key = Secret::new(value?);
+                self.ai = true;
+            }
+            Arg::Long("aireview") => self.ai_review = true,
+            Arg::Long("noaireview") => self.ai_review = false,
+            Arg::Long("aiedit") => self.ai_edit = true,
+            Arg::Long("noaiedit") => self.ai_edit = false,
+            Arg::Long("aitimeout") => self.ai_timeout = value?.parse()?,
             Arg::Long("gendb") => self.gendb = true,
             Arg::Long("nocheck") => self.no_check = true,
             Arg::Long("devel") => self.devel = true,
@@ -431,6 +458,11 @@ fn takes_value(arg: Arg) -> TakesValue {
         Arg::Long("provides") => TakesValue::Optional,
         Arg::Long("clonedir") => TakesValue::Required,
         Arg::Long("develfile") => TakesValue::Required,
+        Arg::Long("aiurl") => TakesValue::Required,
+        Arg::Long("aimodel") => TakesValue::Required,
+        Arg::Long("aikey") => TakesValue::Required,
+        Arg::Long("aikeyfile") => TakesValue::Required,
+        Arg::Long("aitimeout") => TakesValue::Required,
         //pacman
         Arg::Long("dbpath") | Arg::Short('b') => TakesValue::Required,
         Arg::Long("root") | Arg::Short('r') => TakesValue::Required,

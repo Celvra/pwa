@@ -63,6 +63,16 @@ pub fn help() {
     println!();
     printtr!("    --skipreview           Skip the review process");
     printtr!("    --review               Don't skip the review process");
+    println!();
+    printtr!("    --[no]ai               Enable the AI layer");
+    printtr!("    --aiurl     <url>      Base URL of an OpenAI compatible API");
+    printtr!("    --aimodel   <model>    Model to use for AI requests");
+    printtr!("    --aikey     <key>      API key to use for AI requests");
+    printtr!("    --aikeyfile <file>     Read the AI API key from a file");
+    printtr!("    --aitavilykey <key>    API key for the Tavily web search");
+    printtr!("    --[no]aireview         Let the AI review PKGBUILDs");
+    printtr!("    --[no]aiedit           Let the AI propose PKGBUILD fixes");
+    printtr!("    --aitimeout <secs>     Timeout for AI requests");
     printtr!("    --[no]upgrademenu      Show interactive menu to skip upgrades");
     printtr!("    --[no]removemake       Remove makedepends after install");
     printtr!("    --[no]cleanafter       Remove package sources after install");
