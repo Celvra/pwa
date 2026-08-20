@@ -7,9 +7,9 @@
 基于 [paru](https://github.com/Morganamilo/paru) 的 AUR 助手 fork 版本，在保留 paru 常用工作流的基础上，加入了可选的 AI 功能层，以让 AI 检查，避免滚挂、AUR 投毒包。
 
 > [!WARNING]
-> AI 无法避免所有投毒操作，因此只能尽量让 AI 理解 PKGBUILD 的意思并提供建议，以及让 AI 进行版本比较。请勿过度依赖本项目的 AI 功能，其并不能解决一切，AI 幻觉是无可避免的，您仍需要做好滚挂的准备并准备类似 Timeshift 的回滚工具！
-> AI 可能产生幻觉。PWA 不对 AI 产生的幻觉导致的系统损坏等负责，请谨慎对待
-> PWA 是一个 Vibe 项目，因此我会尽力 Review 一遍 Vibe 的代码。
+> AI 无法避免所有投毒操作，因此只能尽量让 AI 理解 PKGBUILD 的意思并提供建议，以及让 AI 进行版本比较。请勿过度依赖本项目的 AI 功能，其并不能解决一切; AI 幻觉是无可避免的，您仍需要做好滚挂的准备并准备类似 Timeshift 的回滚工具。
+> PWA 不对 AI 产生的幻觉导致的系统损坏等负责，请谨慎对待。
+> 这是一个 Vibe 项目，因此我会尽力 Review 一遍 Vibe 的代码。
 
 ## 项目简介
 
@@ -72,9 +72,11 @@ pwa -Bi .        # 构建并安装当前目录中的 PKGBUILD
 
 若你已经配置 AI 配置，那么 pwa 理应会在：
 
-> 系统更新时
-> 审查 PKGBUILD 时
-> AUR 包更新时
+- 系统更新时
+
+- 审查 PKGBUILD 时
+
+- AUR 包更新时
 
 自动启动 AI Review。
 
