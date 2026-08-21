@@ -60,7 +60,7 @@ jobs:
         run: |
           cd artifacts
           for arch in x86_64 aarch64 armv7h; do
-            mv "pwa-$arch/pwa.tar.zst" "pwa-${{ needs.get-version.outputs.version }}-$arch.tar.zst"
+            mv "pwa-$arch/pwa-$arch.tar.zst" "pwa-${{ needs.get-version.outputs.version }}-$arch.tar.zst"
           done
       - name: Create Release
         uses: softprops/action-gh-release@v2
