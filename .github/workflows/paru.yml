@@ -30,6 +30,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Pre-seed build-dep cache
+        run: |
+          mkdir -p testdata/pkg
+          mkdir -p /tmp/pacmandb
+          cp testdata/pacman.conf /tmp/pacman-seed.conf
+          printf '\n[options]\nDBPath = /tmp/pacmandb\nCacheDir = %s/testdata/pkg\n' "$PWD" >> /tmp/pacman-seed.conf
+          echo "Syncing archive DB (with retry)..."
+          for i in 1 2 3 4 5; do
+            rm -f /tmp/pacmandb/db.lck
+            if pacman -Sy --config /tmp/pacman-seed.conf 2>&1 | tee /tmp/pacman-sync.log; then
+              if ! grep -q "failed retrieving" /tmp/pacman-sync.log; then
+                echo "Sync OK"
+                break
+              fi
+            fi
+            echo "Sync failed (attempt $i), retrying..."
+            sleep $((i*5))
+          done
+          PKGS="expac jq meson gtest gmock cmake python pkgconf python-sphinx python-packaging cairo xcb-util-image xcb-util-wm xcb-util-xrm xcb-util-cursor alsa-lib libpulse libmpdclient libnl jsoncpp curl i3-wm perl git systemd ninja"
+          echo "Prefetching build deps: $PKGS"
+          for pkg in $PKGS; do
+            echo "-> $pkg"
+            for i in 1 2 3 4 5; do
+              rm -f /tmp/pacmandb/db.lck
+              pacman -Sw --config /tmp/pacman-seed.conf --noconfirm "$pkg" 2>&1 | tee /tmp/pacman-prefetch.log
+              if ! grep -q "failed retrieving" /tmp/pacman-prefetch.log && ! grep -q "download library error" /tmp/pacman-prefetch.log; then
+                break
+              fi
+              echo "  retry $i for $pkg..."
+              sleep $((i*3))
+              pacman -Sy --config /tmp/pacman-seed.conf 2>&1 | tail -5 || true
+            done || echo "warning: failed to prefetch $pkg after retries"
+          done
+          echo "Pre-seed done: $(ls testdata/pkg 2>/dev/null | wc -l) packages, $(du -sh testdata/pkg 2>/dev/null | cut -f1)"
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -62,6 +97,41 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Pre-seed build-dep cache
+        run: |
+          mkdir -p testdata/pkg
+          mkdir -p /tmp/pacmandb
+          cp testdata/pacman.conf /tmp/pacman-seed.conf
+          printf '\n[options]\nDBPath = /tmp/pacmandb\nCacheDir = %s/testdata/pkg\n' "$PWD" >> /tmp/pacman-seed.conf
+          echo "Syncing archive DB (with retry)..."
+          for i in 1 2 3 4 5; do
+            rm -f /tmp/pacmandb/db.lck
+            if pacman -Sy --config /tmp/pacman-seed.conf 2>&1 | tee /tmp/pacman-sync.log; then
+              if ! grep -q "failed retrieving" /tmp/pacman-sync.log; then
+                echo "Sync OK"
+                break
+              fi
+            fi
+            echo "Sync failed (attempt $i), retrying..."
+            sleep $((i*5))
+          done
+          PKGS="expac jq meson gtest gmock cmake python pkgconf python-sphinx python-packaging cairo xcb-util-image xcb-util-wm xcb-util-xrm xcb-util-cursor alsa-lib libpulse libmpdclient libnl jsoncpp curl i3-wm perl git systemd ninja"
+          echo "Prefetching build deps: $PKGS"
+          for pkg in $PKGS; do
+            echo "-> $pkg"
+            for i in 1 2 3 4 5; do
+              rm -f /tmp/pacmandb/db.lck
+              pacman -Sw --config /tmp/pacman-seed.conf --noconfirm "$pkg" 2>&1 | tee /tmp/pacman-prefetch.log
+              if ! grep -q "failed retrieving" /tmp/pacman-prefetch.log && ! grep -q "download library error" /tmp/pacman-prefetch.log; then
+                break
+              fi
+              echo "  retry $i for $pkg..."
+              sleep $((i*3))
+              pacman -Sy --config /tmp/pacman-seed.conf 2>&1 | tail -5 || true
+            done || echo "warning: failed to prefetch $pkg after retries"
+          done
+          echo "Pre-seed done: $(ls testdata/pkg 2>/dev/null | wc -l) packages, $(du -sh testdata/pkg 2>/dev/null | cut -f1)"
 
       - uses: Swatinem/rust-cache@v2
         with:
