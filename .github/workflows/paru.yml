@@ -25,31 +25,48 @@ jobs:
       image: archlinux
     steps:
       - name: Install Packages
-        run: |
-          set -euo pipefail
-          # Single consistent mirror avoids cross-mirror db/sig mismatch
-          echo 'Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-          # Retrying curl (no resume, avoids corrupt partial files on retry)
-          if ! grep -q '^XferCommand' /etc/pacman.conf; then
-            echo 'XferCommand = /usr/bin/curl --retry 5 --retry-delay 3 --retry-connrefused -L -o %o %u' >> /etc/pacman.conf
-          fi
-          # Throwaway CI container: force-off signature checks (incl. per-repo overrides)
-          sed -i 's/SigLevel = .*/SigLevel = Never/' /etc/pacman.conf
-          PACKAGES=(rust clang gcc git libarchive pkgconf sudo fakeroot)
-          for i in 1 2 3 4 5; do
-            if pacman -Syu --noconfirm --needed "${PACKAGES[@]}"; then
-              break
-            fi
-            echo "pacman failed, retry $i/5" >&2
-            sleep $((i * 5))
-            if [ "$i" -eq 5 ]; then
-              echo "pacman failed after retries" >&2
-              exit 1
-            fi
-          done
+        run: pacman -Syu rust clang gcc git libarchive pkgconf sudo fakeroot --noconfirm --needed
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore testdata pkg cache
+        uses: actions/cache@v4
+        with:
+          path: testdata/pkg
+          key: testdata-pkg-archive-20210430
+
+      - name: Pre-seed build-dep cache
+        run: |
+          mkdir -p testdata/pkg /tmp/pacmandb
+          cp testdata/pacman.conf /tmp/pacman-seed.conf
+          printf '\n[options]\nDBPath = /tmp/pacmandb\n' >> /tmp/pacman-seed.conf
+          for i in 1 2 3 4 5; do
+            rm -f /tmp/pacmandb/db.lck
+            pacman -Sy --config /tmp/pacman-seed.conf && break
+            echo "sync retry $i..."
+            sleep $((i*5))
+          done
+          PKGS="expac jq meson gtest gmock cmake python pkgconf python-sphinx python-packaging cairo xcb-util-image xcb-util-wm xcb-util-xrm xcb-util-cursor alsa-lib libpulse libmpdclient libnl jsoncpp curl i3-wm perl git systemd ninja"
+          rm -f /tmp/pacmandb/db.lck
+          pacman -Sp --config /tmp/pacman-seed.conf --noconfirm $PKGS 2>/dev/null | grep -E '^https?://' | sort -u > /tmp/urls.txt || true
+          echo "files to fetch: $(wc -l < /tmp/urls.txt)"
+          while read -r url; do
+            f="testdata/pkg/$(basename "$url")"
+            [ -s "$f" ] && continue
+            echo "-> $(basename "$url")"
+            ok=0
+            for i in 1 2 3 4 5 6 7 8; do
+              if curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 3 -C - -o "$f.part" "$url"; then
+                mv "$f.part" "$f"
+                ok=1
+                break
+              fi
+              sleep $((i*2))
+            done
+            [ $ok -eq 1 ] || echo "WARNING: failed to fetch $url"
+          done < /tmp/urls.txt
+          echo "Pre-seed done: $(ls testdata/pkg | wc -l) packages, $(du -sh testdata/pkg | cut -f1)"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -70,25 +87,7 @@ jobs:
       image: archlinux
     steps:
       - name: Install Packages
-        run: |
-          set -euo pipefail
-          echo 'Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-          if ! grep -q '^XferCommand' /etc/pacman.conf; then
-            echo 'XferCommand = /usr/bin/curl --retry 5 --retry-delay 3 --retry-connrefused -L -o %o %u' >> /etc/pacman.conf
-          fi
-          sed -i 's/SigLevel = .*/SigLevel = Never/' /etc/pacman.conf
-          PACKAGES=(rust curl clang git base-devel libarchive meson asciidoc doxygen fakechroot pkgconf)
-          for i in 1 2 3 4 5; do
-            if pacman -Syu --noconfirm --needed "${PACKAGES[@]}"; then
-              break
-            fi
-            echo "pacman failed, retry $i/5" >&2
-            sleep $((i * 5))
-            if [ "$i" -eq 5 ]; then
-              echo "pacman failed after retries" >&2
-              exit 1
-            fi
-          done
+        run: pacman -Syu rust curl clang git base-devel libarchive meson asciidoc doxygen fakechroot pkgconf --noconfirm --needed
 
       - name: Install Pacman-git
         run: |
@@ -101,6 +100,44 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore testdata pkg cache
+        uses: actions/cache@v4
+        with:
+          path: testdata/pkg
+          key: testdata-pkg-archive-20210430
+
+      - name: Pre-seed build-dep cache
+        run: |
+          mkdir -p testdata/pkg /tmp/pacmandb
+          cp testdata/pacman.conf /tmp/pacman-seed.conf
+          printf '\n[options]\nDBPath = /tmp/pacmandb\n' >> /tmp/pacman-seed.conf
+          for i in 1 2 3 4 5; do
+            rm -f /tmp/pacmandb/db.lck
+            pacman -Sy --config /tmp/pacman-seed.conf && break
+            echo "sync retry $i..."
+            sleep $((i*5))
+          done
+          PKGS="expac jq meson gtest gmock cmake python pkgconf python-sphinx python-packaging cairo xcb-util-image xcb-util-wm xcb-util-xrm xcb-util-cursor alsa-lib libpulse libmpdclient libnl jsoncpp curl i3-wm perl git systemd ninja"
+          rm -f /tmp/pacmandb/db.lck
+          pacman -Sp --config /tmp/pacman-seed.conf --noconfirm $PKGS 2>/dev/null | grep -E '^https?://' | sort -u > /tmp/urls.txt || true
+          echo "files to fetch: $(wc -l < /tmp/urls.txt)"
+          while read -r url; do
+            f="testdata/pkg/$(basename "$url")"
+            [ -s "$f" ] && continue
+            echo "-> $(basename "$url")"
+            ok=0
+            for i in 1 2 3 4 5 6 7 8; do
+              if curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 3 -C - -o "$f.part" "$url"; then
+                mv "$f.part" "$f"
+                ok=1
+                break
+              fi
+              sleep $((i*2))
+            done
+            [ $ok -eq 1 ] || echo "WARNING: failed to fetch $url"
+          done < /tmp/urls.txt
+          echo "Pre-seed done: $(ls testdata/pkg | wc -l) packages, $(du -sh testdata/pkg | cut -f1)"
 
       - uses: Swatinem/rust-cache@v2
         with:
